@@ -223,12 +223,17 @@ u32 tcp_tb_ssthresh(struct sock *sk)
 {
 	struct tcp_tb *ca = inet_csk_ca(sk);
 	struct tb_packet *lostPacketsFront = list_first_entry(&ca->lostPackets, struct tb_packet, list);
+	u64 dividend = (u64)beta;
 	u32 ssthresh;
 
 	if (ssthresh_cwnd_based) {
-		ssthresh = max((tcp_sk(sk)->snd_cwnd * beta) / TBTCP_BETA_SCALE, 2U);
+		dividend *= tcp_sk(sk)->snd_cwnd;
+		do_div(dividend, TBTCP_BETA_SCALE);
+		ssthresh = umax(dividend, 2U);
 	} else {
-		ssthresh = max(((lostPacketsFront->Ntx - lostPacketsFront->Nak) * beta) / TBTCP_BETA_SCALE, 2U);
+		dividend *= (lostPacketsFront->Ntx - lostPacketsFront->Nak);
+		do_div(dividend, TBTCP_BETA_SCALE);
+		ssthresh = umax(dividend, 2U);
 	}
 
 	ca->ssthresh_Ntx = ssthresh;
@@ -439,7 +444,7 @@ static void tcp_tb_pkts_acked(struct sock *sk, const struct ack_sample *sample) 
 
 
 	if (ca->postRecovery) {
-		ca->Ntx = tp->snd_ssthresh * (tp->snd_ssthresh - 1) / 2 + 1;
+		ca->Ntx = (tp->snd_ssthresh * (tp->snd_ssthresh - 1))>>1 + 1;
 	 	ca->Nak = ca->Ntx;
 	 	ca->Ttx = now;
 		ca->Tak = now + ca->rtt;
@@ -494,3 +499,9 @@ static void __exit tb_unregister(void)
 
 module_init(tb_register);
 module_exit(tb_unregister);
+
+MODULE_AUTHOR("Christoffer Bjelke");
+MODULE_AUTHOR("Andreas Limi");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("1.0");
+MODULE_DESCRIPTION("Timer-Based TCP Congestion Control");
