@@ -516,11 +516,11 @@ config TCP_CONG_WESTWOOD
 	  wired networks and throughput over wireless links.
 
 config TCP_CONG_TB
-	tristate "TB TCP"
+	tristate "Timer-based TCP (TBTCP)"
 	default y
 	help
-	This is version 1.0 of TBTCP.
-	See <https://github.com/andreaslimidev/tbtcp-linux>
+	  This is version 2.0 of Timer-based TCP Congestion Control.
+	  See <https://github.com/kristjoc/tbtcp>
 
 config TCP_CONG_HTCP
 	tristate "H-TCP"
@@ -700,7 +700,7 @@ choice
 		bool "Cubic" if TCP_CONG_CUBIC=y
 
 	config DEFAULT_TB
-		bool "Timer based" if TCP_CONG_TB=y
+		bool "TBTCP" if TCP_CONG_TB=y
 
 	config DEFAULT_HTCP
 		bool "Htcp" if TCP_CONG_HTCP=y
@@ -743,7 +743,7 @@ config DEFAULT_TCP_CONG
 	default "cubic" if DEFAULT_CUBIC
 	default "htcp" if DEFAULT_HTCP
 	default "hybla" if DEFAULT_HYBLA
-	default "timer_based" if DEFAULT_TB
+	default "tbtcp" if DEFAULT_TB
 	default "vegas" if DEFAULT_VEGAS
 	default "westwood" if DEFAULT_WESTWOOD
 	default "veno" if DEFAULT_VENO

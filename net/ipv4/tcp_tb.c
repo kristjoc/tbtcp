@@ -27,16 +27,16 @@ MODULE_PARM_DESC(beta, "beta for multiplicative increase");
 
 static int ssthresh_cwnd_based __read_mostly = false;
 module_param(ssthresh_cwnd_based, int, 0644);
-MODULE_PARM_DESC(ssthresh_cwnd_based, "ssthresh based on cwnd instead of inflight");
+MODULE_PARM_DESC(ssthresh_cwnd_based, "ssthresh based on cwnd");
 
 
 struct tcp_tb {
-	u64 Ttx;
+	u64 Ttx; 			// next scheduled event
 	u32 Ntx;
 	u32 ssthresh_Ntx;
 	u32 NlastAck;
 	u32 Nak;
-	u64 Tak;
+	u64 Tak;	// predicted arrival time for the expected ACK
 	u32 HighData;
 	u64 rtt;
 	bool postRecovery;	       // true if we are in post-recovery
@@ -55,7 +55,7 @@ struct tb_packet {
 
 inline bool tcp_tb_in_slow_start(struct tcp_tb *ca);
 
-/* function that does the same as remove_packets but returns how many were removed */
+/* function that remove packets and returns how many were removed */
 static int remove_packets(struct tcp_tb *ca, u32 seq) {
 	struct tb_packet *packet;
 	struct list_head *pos, *q;
@@ -135,10 +135,15 @@ __attribute__((target("sse2"))) float log2_of_number(float x) {
 }
 
 
-__attribute__((target("sse2"))) inline u64 delta_time_mult_rtt(struct tcp_tb *ca, u32 seq_num, u32 k, u64 rtt)
+__attribute__((target("sse2"))) inline u64 delta_time_mult_rtt(struct tcp_tb *ca,
+							       u32 seq_num,
+							       u32 k, u64 rtt)
 {
 	double res, div;
 	if (tcp_tb_in_slow_start(ca)) {
+		if (seq_num == 0) {
+			printk(KERN_ERR "Oops division by zero");
+		}
 		div = (float)((float) k / (float) seq_num);
 		res = log2_of_number(1 + div);
 		return res * rtt;
@@ -146,8 +151,6 @@ __attribute__((target("sse2"))) inline u64 delta_time_mult_rtt(struct tcp_tb *ca
 		res = (double)(sqrt_double((8*(seq_num + k)-7)) / (double)2) - (double)(sqrt_double((double)(8*seq_num - 7)) / (double)2);
 		return res * rtt;
 	}
-
-	return 1;
 }
 
 int start_event_timer(struct sock *sk, struct hrtimer *timer, u64 time_ns) {
@@ -221,6 +224,7 @@ EXPORT_SYMBOL_GPL(tcp_tb_cong_avoid);
 /* Slow start threshold is half the congestion window (min 2) */
 u32 tcp_tb_ssthresh(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct tcp_tb *ca = inet_csk_ca(sk);
 	struct tb_packet *lostPacketsFront = list_first_entry(&ca->lostPackets, struct tb_packet, list);
 	u64 dividend = (u64)beta;
@@ -258,10 +262,12 @@ static void tcp_tb_init(struct sock *sk)
 	u64 now = ktime_get_ns();
 	u32 IW = tp->snd_cwnd;
 
+	printk(KERN_DEBUG "Initializing TBTCP with IW=%d", IW);
+
 	ca->postRecovery = false;
 	ca->rtt = max(tp->srtt_us >> 3, 1U) * 1000;
 
-	ca->HighData = 1;
+	ca->HighData = tp->snd_nxt;
 	ca->ssthresh_Ntx = U32_MAX;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	ca->NlastAck = tp->snd_una;
@@ -283,7 +289,7 @@ static void tcp_tb_release(struct sock *sk) {
 	struct hrtimer *timer = (struct hrtimer*) &tp->event_timer;
 
 	cancel_event_timer(timer);
-	printk(KERN_DEBUG "Releasing timer\n");
+	printk(KERN_DEBUG "Releasing TBTCP timer\n");
 }
 
 static u32 tcp_tb_min_tso_segs(struct sock *sk)
@@ -291,45 +297,50 @@ static u32 tcp_tb_min_tso_segs(struct sock *sk)
 	return 1;
 }
 
-void tcp_tb_pace(struct hrtimer *timer, u64 now) {
+void tcp_tb_pace(struct hrtimer *timer, u64 time) {
 	struct tcp_sock *tp = container_of(timer, struct tcp_sock, event_timer);
 	struct sock *sk = (struct sock *)tp;
 	struct tcp_tb *ca = inet_csk_ca(sk);
 	u64 pacingTime;
 	u32 snd_nxt;
 
+	/* Store the tp->snd_nxt before sending */
 	snd_nxt = tp->snd_nxt;
-	if (!sock_owned_by_user(sk)) {
-		tcp_write_xmit(sk, tcp_current_mss(sk), TCP_NAGLE_OFF, 2, sk_gfp_mask(sk, GFP_ATOMIC));
+
+	/* Try to send if sock is not owned by user and there's smth to send */
+	if (!sock_owned_by_user(sk) && sk->sk_wmem_queued > 0) {
+		tcp_write_xmit(sk, tcp_current_mss(sk), TCP_NAGLE_OFF, 2,
+			       sk_gfp_mask(sk, GFP_ATOMIC));
 	} else {
 		start_event_timer(sk, timer, ktime_get_ns());
 		return;
 	}
 
-	/* start a new initial timer if nothing was sent */
-	if (tp->bytes_sent == 0) {
+	/* start a new initial timer if nothing was ever sent */
+	if (tp->bytes_sent == 0 || tp->snd_nxt <= ca->HighData) {
+		
 		ca->Ttx = ktime_get_ns();
-		ca->Tak = ktime_get_ns() + ca->rtt;
+		ca->Tak = ca->Ttx + ca->rtt;
 
 		start_event_timer(sk, timer, ca->Ttx);
 		return;
-
 	}
 
-	add_packet(ca, snd_nxt, ca->Ntx, ca->Nak, now);
-	ca->HighData = ca->HighData + 1;
+	add_packet(ca, snd_nxt, ca->Ntx, ca->Nak, time);
+	ca->HighData = tp->snd_nxt;
 
 	kernel_fpu_begin();
 	pacingTime = delta_time_mult_rtt(ca, ca->Ntx, 1, ca->rtt);
 	kernel_fpu_end();
 
-	ca->Ntx = ca->Ntx + 1;
-	ca->Ttx = now + pacingTime;
+	ca->Ntx++;
+	ca->Ttx = time + pacingTime;
 
 	/* queue next event */
 	start_event_timer(sk, timer, ca->Ttx);
 }
 
+/* event handler when now == Ttx */
 enum hrtimer_restart tcp_tb_event_handler(struct hrtimer *timer) {
 	struct tcp_sock *tp = container_of(timer, struct tcp_sock, event_timer);
 	struct sock *sk = (struct sock *)tp;
@@ -340,12 +351,12 @@ enum hrtimer_restart tcp_tb_event_handler(struct hrtimer *timer) {
 	if (ca->Ttx < ca->Tak && ca->state < TCP_CA_Recovery) {
 		tcp_tb_pace(timer, ca->Ttx);
 	} else {
+		/* What shall we do here? */
 		ca->stalled = true;
 	}
 
 	return HRTIMER_NORESTART;
 }
-
 EXPORT_SYMBOL_GPL(tcp_tb_event_handler);
 
 void tcp_tb_set_state (struct sock *sk, u8 new_state) {
@@ -426,7 +437,7 @@ static void tcp_tb_pkts_acked(struct sock *sk, const struct ack_sample *sample) 
 	if (sample->rtt_us > 0)
 		ca->rtt = rtt_ns;
 
-	if (before(tp->snd_una, ca->NlastAck) || tp->snd_una == ca->NlastAck) {
+	if (!after(tp->snd_una, ca->NlastAck)) {
 		return;	// ignore duplicate acks
 	}
 
@@ -442,20 +453,21 @@ static void tcp_tb_pkts_acked(struct sock *sk, const struct ack_sample *sample) 
 		return;
 	}
 
-
 	if (ca->postRecovery) {
-		ca->Ntx = (tp->snd_ssthresh * (tp->snd_ssthresh - 1))>>1 + 1;
+		
+		ca->Ntx = ((tp->snd_ssthresh * (tp->snd_ssthresh - 1))>>1) + 1;
+
 	 	ca->Nak = ca->Ntx;
 	 	ca->Ttx = now;
 		ca->Tak = now + ca->rtt;
 		ca->postRecovery = false;
-	} else if (removed > 0) {
+	} else if (removed >= 0) { // Consider also partial ACKs
 		ca->Tak = now;
 		kernel_fpu_begin();
 		delta = delta_time_mult_rtt(ca, ca->Nak, sample->pkts_acked, ca->rtt);
 		kernel_fpu_end();
-		ca->Tak = ca->Tak + delta;
-		ca->Nak = ca->Nak + sample->pkts_acked;
+		ca->Tak += delta;
+		ca->Nak += sample->pkts_acked;
 	}
 
 	if (ca->stalled) {
@@ -471,7 +483,7 @@ static void tcp_tb_main(struct sock *sk, u32 ack, int flag,
 
 struct tcp_congestion_ops tcp_tb_ops = {
 	.flags		= TCP_CONG_NON_RESTRICTED,
-	.name		= "timer_based",
+	.name		= "tbtcp",
 	.init		= tcp_tb_init,
 	.release	= tcp_tb_release,
 	.owner		= THIS_MODULE,
@@ -486,14 +498,14 @@ struct tcp_congestion_ops tcp_tb_ops = {
 
 static int __init tb_register(void)
 {
-	printk(KERN_DEBUG "Registering timer based congestion control\n");
+	printk(KERN_INFO "Registering Timer-based TCP Congestion Control\n");
 	tcp_register_congestion_control(&tcp_tb_ops);
 	return 0;
 }
 
 static void __exit tb_unregister(void)
 {
-	printk(KERN_DEBUG "Unregistering timer based congestion control\n");
+	printk(KERN_INFO "Unregistering Timer-based TCP Congestion Control\n");
 	tcp_unregister_congestion_control(&tcp_tb_ops);
 }
 
@@ -502,6 +514,7 @@ module_exit(tb_unregister);
 
 MODULE_AUTHOR("Christoffer Bjelke");
 MODULE_AUTHOR("Andreas Limi");
+MODULE_AUTHOR("kristjoc");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0");
+MODULE_VERSION("2.0");
 MODULE_DESCRIPTION("Timer-Based TCP Congestion Control");
