@@ -700,7 +700,7 @@ choice
 		bool "Cubic" if TCP_CONG_CUBIC=y
 
 	config DEFAULT_TB
-		bool "TBTCP" if TCP_CONG_TB=y
+		bool "TimerBased" if TCP_CONG_TB=y
 
 	config DEFAULT_HTCP
 		bool "Htcp" if TCP_CONG_HTCP=y
@@ -743,7 +743,7 @@ config DEFAULT_TCP_CONG
 	default "cubic" if DEFAULT_CUBIC
 	default "htcp" if DEFAULT_HTCP
 	default "hybla" if DEFAULT_HYBLA
-	default "tbtcp" if DEFAULT_TB
+	default "timer_based" if DEFAULT_TB
 	default "vegas" if DEFAULT_VEGAS
 	default "westwood" if DEFAULT_WESTWOOD
 	default "veno" if DEFAULT_VENO

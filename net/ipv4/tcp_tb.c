@@ -483,7 +483,7 @@ static void tcp_tb_main(struct sock *sk, u32 ack, int flag,
 
 struct tcp_congestion_ops tcp_tb_ops = {
 	.flags		= TCP_CONG_NON_RESTRICTED,
-	.name		= "tbtcp",
+	.name		= "timer_based",
 	.init		= tcp_tb_init,
 	.release	= tcp_tb_release,
 	.owner		= THIS_MODULE,
