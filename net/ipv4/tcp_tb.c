@@ -141,16 +141,15 @@ __attribute__((target("sse2"))) inline u64 delta_time_mult_rtt(struct tcp_tb *ca
 {
 	double res, div;
 	if (tcp_tb_in_slow_start(ca)) {
-		if (seq_num == 0) {
+		if (seq_num == 0)
 			printk(KERN_ERR "Oops division by zero");
-		}
 		div = (float)((float) k / (float) seq_num);
 		res = log2_of_number(1 + div);
-		return res * rtt;
 	} else {
 		res = (double)(sqrt_double((8*(seq_num + k)-7)) / (double)2) - (double)(sqrt_double((double)(8*seq_num - 7)) / (double)2);
-		return res * rtt;
 	}
+
+	return res * rtt;
 }
 
 int start_event_timer(struct sock *sk, struct hrtimer *timer, u64 time_ns) {
@@ -226,12 +225,14 @@ u32 tcp_tb_ssthresh(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct tcp_tb *ca = inet_csk_ca(sk);
-	struct tb_packet *lostPacketsFront = list_first_entry(&ca->lostPackets, struct tb_packet, list);
+	struct tb_packet *lostPacketsFront = list_first_entry(&ca->lostPackets,
+														  struct tb_packet,
+														  list);
 	u64 dividend = (u64)beta;
 	u32 ssthresh;
 
 	if (ssthresh_cwnd_based) {
-		dividend *= tcp_sk(sk)->snd_cwnd;
+		dividend *= tp->snd_cwnd;
 		do_div(dividend, TBTCP_BETA_SCALE);
 		ssthresh = umax(dividend, 2U);
 	} else {
@@ -267,7 +268,7 @@ static void tcp_tb_init(struct sock *sk)
 	ca->postRecovery = false;
 	ca->rtt = max(tp->srtt_us >> 3, 1U) * 1000;
 
-	ca->HighData = tp->snd_nxt;
+	ca->HighData = 1;
 	ca->ssthresh_Ntx = U32_MAX;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	ca->NlastAck = tp->snd_una;
@@ -317,8 +318,8 @@ void tcp_tb_pace(struct hrtimer *timer, u64 time) {
 	}
 
 	/* start a new initial timer if nothing was ever sent */
-	if (tp->bytes_sent == 0 || tp->snd_nxt <= ca->HighData) {
-		
+	if (tp->bytes_sent == 0) {
+
 		ca->Ttx = ktime_get_ns();
 		ca->Tak = ca->Ttx + ca->rtt;
 
@@ -327,7 +328,7 @@ void tcp_tb_pace(struct hrtimer *timer, u64 time) {
 	}
 
 	add_packet(ca, snd_nxt, ca->Ntx, ca->Nak, time);
-	ca->HighData = tp->snd_nxt;
+	ca->HighData++;
 
 	kernel_fpu_begin();
 	pacingTime = delta_time_mult_rtt(ca, ca->Ntx, 1, ca->rtt);
@@ -514,7 +515,6 @@ module_exit(tb_unregister);
 
 MODULE_AUTHOR("Christoffer Bjelke");
 MODULE_AUTHOR("Andreas Limi");
-MODULE_AUTHOR("kristjoc");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("2.0");
+MODULE_VERSION("2.1");
 MODULE_DESCRIPTION("Timer-Based TCP Congestion Control");
