@@ -268,7 +268,7 @@ static void tcp_tb_init(struct sock *sk)
 	ca->postRecovery = false;
 	ca->rtt = max(tp->srtt_us >> 3, 1U) * 1000;
 
-	ca->HighData = 1;
+	ca->HighData = tp->snd_nxt;
 	ca->ssthresh_Ntx = U32_MAX;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	ca->NlastAck = tp->snd_una;
@@ -318,7 +318,7 @@ void tcp_tb_pace(struct hrtimer *timer, u64 time) {
 	}
 
 	/* start a new initial timer if nothing was ever sent */
-	if (tp->bytes_sent == 0) {
+	if (tp->bytes_sent == 0 || tp->snd_nxt <= ca->HighData) {
 
 		ca->Ttx = ktime_get_ns();
 		ca->Tak = ca->Ttx + ca->rtt;
@@ -328,7 +328,7 @@ void tcp_tb_pace(struct hrtimer *timer, u64 time) {
 	}
 
 	add_packet(ca, snd_nxt, ca->Ntx, ca->Nak, time);
-	ca->HighData++;
+	ca->HighData = tp->snd_nxt;
 
 	kernel_fpu_begin();
 	pacingTime = delta_time_mult_rtt(ca, ca->Ntx, 1, ca->rtt);
@@ -455,7 +455,7 @@ static void tcp_tb_pkts_acked(struct sock *sk, const struct ack_sample *sample) 
 	}
 
 	if (ca->postRecovery) {
-		
+
 		ca->Ntx = ((tp->snd_ssthresh * (tp->snd_ssthresh - 1))>>1) + 1;
 
 	 	ca->Nak = ca->Ntx;
@@ -490,10 +490,10 @@ struct tcp_congestion_ops tcp_tb_ops = {
 	.owner		= THIS_MODULE,
 	.ssthresh	= tcp_tb_ssthresh,
 	.cong_control	= tcp_tb_main,
-	.undo_cwnd	= tcp_tb_undo_cwnd,
+	.undo_cwnd	    = tcp_tb_undo_cwnd,
 	.min_tso_segs	= tcp_tb_min_tso_segs,
 	.event_handler  = tcp_tb_event_handler,
-	.set_state	= tcp_tb_set_state,
+	.set_state	    = tcp_tb_set_state,
 	.pkts_acked     = tcp_tb_pkts_acked,
 };
 
@@ -516,5 +516,5 @@ module_exit(tb_unregister);
 MODULE_AUTHOR("Christoffer Bjelke");
 MODULE_AUTHOR("Andreas Limi");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("2.1");
+MODULE_VERSION("2.2");
 MODULE_DESCRIPTION("Timer-Based TCP Congestion Control");
